@@ -1,0 +1,197 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+interface IERC721 {
+    function transferFrom(address from, address to, uint256 tokenId) external;
+}
+
+contract Raffle {
+    // Define the raffle types.
+    enum PrizeType { ETH, ERC20, ERC721 }
+
+    // Define a struct to represent a ticket bundle.
+    struct TicketBundle {
+        uint256 numTickets;
+        uint256 price;
+    }
+
+    // Update the raffle struct.
+    struct RaffleData {
+        string name;
+        string description;
+        uint256 ticketPrice;
+        uint256 numTickets;
+        uint256 endTime;
+        uint256 totalCollected;
+        uint256[] tickets;
+        address[] participants;
+        PrizeType prizeType;
+        address prizeToken;
+        uint256 prizeAmount;
+        uint256 prizeNFTId;
+        TicketBundle[] ticketBundles; // Add ticket bundles to the raffle.
+        address winner; // Store the winner address.
+        bool isActive; // New field to check if the raffle is active.
+    }
+
+    // Define a mapping to store the raffle data by ID.
+    mapping(uint256 => RaffleData) public raffles;
+
+    // Define the admin address.
+    address public admin = msg.sender;
+
+    // Define an event to be emitted when a raffle is created.
+    event RaffleCreated(uint256 raffleId, address indexed creator);
+
+    // Define an event to be emitted when a ticket is purchased.
+    event TicketPurchased(uint256 raffleId, address indexed participant, uint256 numTickets);
+
+    // Define an event to be emitted when a winner is selected.
+    event WinnerSelected(uint256 raffleId, address indexed winner);
+
+    // Define a modifier to ensure that only the admin can call a function.
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "You do not have permission to perform this action.");
+        _;
+    }
+
+    constructor() {
+        admin = msg.sender;
+    }
+
+    function createRaffle(
+        string memory name,
+        string memory description,
+        uint256 ticketPrice,
+        uint256 numTickets,
+        uint256 endTime,
+        PrizeType prizeType,
+        address prizeToken,
+        uint256 prizeAmount,
+        uint256 prizeNFTId
+    ) public onlyAdmin {
+        uint256 raffleId = uint256(keccak256(abi.encodePacked(name, block.timestamp)));
+
+        TicketBundle[] memory bundles;
+        // Set the temporary memory array with the desired ticket bundles
+        bundles = new TicketBundle[](0);
+
+        raffles[raffleId].name = name;
+        raffles[raffleId].description = description;
+        raffles[raffleId].ticketPrice = ticketPrice;
+        raffles[raffleId].numTickets = numTickets;
+        raffles[raffleId].endTime = endTime;
+        raffles[raffleId].totalCollected = 0;
+        raffles[raffleId].tickets = new uint256[](0);
+        raffles[raffleId].participants = new address[](0);
+        raffles[raffleId].prizeType = prizeType;
+        raffles[raffleId].prizeToken = prizeToken;
+        raffles[raffleId].prizeAmount = prizeAmount;
+        raffles[raffleId].prizeNFTId = prizeNFTId;
+        raffles[raffleId].isActive = true; // Set raffle as active.
+
+        // Loop through the memory array and push each element to the storage array
+        for (uint256 i = 0; i < bundles.length; i++) {
+            raffles[raffleId].ticketBundles.push(bundles[i]);
+        }
+
+        emit RaffleCreated(raffleId, msg.sender);
+    }
+
+    function setTicketBundle(uint256 raffleId, uint256 numTickets, uint256 price) public onlyAdmin {
+        raffles[raffleId].ticketBundles.push(TicketBundle({numTickets: numTickets, price: price}));
+    }
+
+function buyTicket(uint256 raffleId, uint256 numTickets) public payable {
+    RaffleData storage raffle = raffles[raffleId];
+    require(raffle.isActive, "This raffle is not active.");
+    require(raffle.endTime > block.timestamp, "This raffle has ended.");
+    require(raffle.totalCollected + (numTickets * raffle.ticketPrice) <= (raffle.numTickets * raffle.ticketPrice), "This raffle is sold out.");
+    require(raffle.tickets.length + numTickets <= raffle.numTickets, "Not enough tickets left in this raffle.");
+
+    uint256 totalExpectedPayment;
+    bool isBundle = false;
+
+    for (uint256 i = 0; i < raffle.ticketBundles.length; i++) {
+        if (raffle.ticketBundles[i].numTickets == numTickets) {
+            require(raffle.tickets.length + raffle.ticketBundles[i].numTickets <= raffle.numTickets, "Not enough tickets left in this raffle for this bundle.");
+            totalExpectedPayment = raffle.ticketBundles[i].price;
+            isBundle = true;
+            break;
+        }
+    }
+
+    if (!isBundle) {
+        totalExpectedPayment = numTickets * raffle.ticketPrice;
+    }
+
+    require(msg.value == totalExpectedPayment, "Incorrect amount sent.");
+
+    for (uint256 i = 0; i < numTickets; i++) {
+        uint256 ticketId = uint256(keccak256(abi.encodePacked(raffleId, msg.sender, block.timestamp, i)));
+        raffle.tickets.push(ticketId);
+        raffle.participants.push(msg.sender);
+    }
+    raffle.totalCollected += totalExpectedPayment;
+
+    emit TicketPurchased(raffleId, msg.sender, numTickets);
+}
+
+    function selectWinner(uint256 raffleId) public onlyAdmin {
+        RaffleData storage raffle = raffles[raffleId];
+        require(raffle.isActive, "This raffle is not active.");
+        require(raffle.endTime <= block.timestamp, "This raffle has not ended.");
+        require(raffle.tickets.length > 0, "No tickets sold for this raffle.");
+
+        uint256 winnerIndex = uint256(keccak256(abi.encodePacked(raffleId, block.timestamp))) % raffle.tickets.length;
+        address winner = raffle.participants[winnerIndex];
+
+        raffle.winner = winner;
+        raffle.isActive = false; // Set raffle as inactive after winner selection.
+
+        if (raffle.prizeType == PrizeType.ETH) {
+            payable(winner).transfer(raffle.totalCollected);
+        } else if (raffle.prizeType == PrizeType.ERC20) {
+            IERC20(raffle.prizeToken).transfer(winner, raffle.prizeAmount);
+        } else if (raffle.prizeType == PrizeType.ERC721) {
+            IERC721(raffle.prizeToken).transferFrom(address(this), winner, raffle.prizeNFTId);
+        }
+
+        emit WinnerSelected(raffleId, winner);
+    }
+
+    function getRaffleDetails(uint256 raffleId) public view returns (RaffleData memory raffle) {
+    raffle = raffles[raffleId];
+}
+
+
+    function getRaffleWinner(uint256 raffleId) public view returns (address) {
+        return raffles[raffleId].winner;
+    }
+
+    function withdrawEth() public onlyAdmin {
+    uint256 ethBalance = address(this).balance;
+    require(ethBalance > 0, "No Ether balance to withdraw.");
+    payable(admin).transfer(ethBalance);
+}
+
+function withdrawERC20s(address tokenAddress) public onlyAdmin {
+    require(tokenAddress != address(0), "Invalid token address");
+
+    IERC20 token = IERC20(tokenAddress);
+    uint256 tokenBalance = token.balanceOf(address(this));
+    require(tokenBalance > 0, "No ERC20 token balance to withdraw");
+
+    token.transfer(admin, tokenBalance);
+}
+
+function withdrawERC721s(address tokenAddress, uint256 tokenId) public onlyAdmin {
+    require(tokenAddress != address(0), "Invalid token address.");
+    IERC721(tokenAddress).transferFrom(address(this), admin, tokenId);
+}
+}
